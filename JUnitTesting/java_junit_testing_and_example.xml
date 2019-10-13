@@ -3,7 +3,7 @@
 <!-- question: 737340  -->
   <question type="coderunner">
     <name>
-      <text>2020-Lab5-JUnit-Getters-and-setter</text>
+      <text>JUnit-Getter-and-setter</text>
     </name>
     <questiontext format="html">
       <text><![CDATA[<p>Now that you've learnt about writing JUnit tests, lets have a go!</p><p>You have been given a simple User class to write unit tests for.</p><p><span style="font-size: 0.9375rem; font-family: -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif, &quot;Apple Color Emoji&quot;, &quot;Segoe UI Emoji&quot;, &quot;Segoe UI Symbol&quot;;">This example uses a simple class with a getter/setter. You should test that both the getter and setter work as expected.</span><br></p><p>This example also has a default username of "Default" this should also be tested.</p><p>Below is the working model class that you'll be testing. Your tests should all pass against this, but if we break any of the functionality at least one of your tests should fail.</p><p>You should use multiple test cases rather than doing everything in one single @Test method.</p><p><br></p><p></p><pre><pre>public class User {<br><br>    private String username = "Default";<br><br>    public void setUsername(String username) {<br>        this.username = username;<br>    }<br><br>    public String getUsername() {<br>        return username;<br>    }<br>}</pre></pre>Note: Include the entire class including relevant imports. You should not need to import the User class as should be in the same package.<br>You can use the "Precheck" to verify that your code compiles.<br><p></p>]]></text>
@@ -332,28 +332,21 @@ given JUnit test class against the model class, and uses the return code to veri
 """
 
 import json
+import os
 import re
 import subprocess
-
-CLASS_DETECTOR_REGEX = re.compile(r'public\s+class\s+(\w+)')
+from typing import Tuple
 
 JUNK_JUNIT_OUTPUT_TEXT = "Thanks for using JUnit! Support its development at https://junit.org/sponsoring"
 
 JUNIT_CONSOLE_FILE = "junit-platform-console-standalone-1.5.2.jar"
-
-IS_PRECHECK = True if ("""{{ IS_PRECHECK }}""" == "1") else False
-
-EXPECTED_RESULT = """{{ TEST.expected }}"""
-
-MODEL_CLASS_CODE = """{{ TEST.testcode | e('py') }}"""
-
-STUDENT_JUNIT_CODE = """{{ STUDENT_ANSWER | e('py') }}"""
 
 
 class TestingError(Exception):
     """
     Simple error class that has an accompanying message of what went wrong.
     """
+
     def __init__(self, message):
         self.message = message
 
@@ -361,42 +354,12 @@ class TestingError(Exception):
         return repr(self.message)
 
 
-def main_wrapper():
-    """
-    Tries to run main_logic but catches any TestingErrors gracefully.
-    Prints the JSON data as expected by the CodeRunner test executor.
-    """
-    try:
-        fractional_score, output_text = main_logic()
-    except TestingError as e:
-        fractional_score = 0
-        output_text = e.message
-
-    result = {'fraction': fractional_score, 'got': output_text}
-    print(json.dumps(result))
-
-
-def save_to_file(filename, body):
+def save_to_file(filename, body) -> None:
     with open(filename, "w") as src:
         print(body, file=src)
 
 
-def get_class_name_from_code(code, code_type):
-    """
-    :param code: The source code to extract the class name from
-    :param code_type: The type of code to be used for error messages
-    :return: The class name found
-    :raises: TestingError if there was not exactly one valid class
-    """
-    class_name_search = CLASS_DETECTOR_REGEX.search(code)
-    if class_name_search is None:
-        raise TestingError(f"** Could not find public class in the {code_type} code. Testing aborted **")
-    if len(class_name_search.groups()) > 1:
-        raise TestingError(f"** Multiple public classes found in the {code_type} code. Testing aborted **")
-    return class_name_search.group(1)
-
-
-def run_process_to_stdout(arg):
+def run_process_to_stdout(arg: str):
     return subprocess.run(
         arg,
         universal_newlines=True,
@@ -406,68 +369,152 @@ def run_process_to_stdout(arg):
     )
 
 
-def main_logic():
+class JUnitTester:
+
+    def __init__(self, junit_console_file: str, junk_junit_output_text: str):
+        self.junit_console_file = junit_console_file
+        self.junk_junit_output_text = junk_junit_output_text
+        self.class_detector_regex = re.compile(r'public\s+class\s+(\w+)')
+        self._files_to_remove = set()
+
+    def cleanup(self) -> None:
+        for file in self._files_to_remove:
+            os.remove(file)
+
+    def test_junit_program(self,
+                           model_class_code: str,
+                           student_junit_code: str,
+                           should_pass: bool,
+                           is_precheck: bool
+                           ) -> str:
+        """
+        Main program - compile all supplied Java files and run all JUnit tests
+
+        :param model_class_code: The model code to use
+        :param student_junit_code: The JUnit test class to use
+        :param should_pass: if the test cases should pass or at least one should fail
+        :param is_precheck: if True, don't run tests, just do compilation
+        :return: A string with the output text
+        :raise TestingError: if there were any issues with the student code that should result in a zero mark
+        """
+
+        # 1. Take given model class and save to file
+
+        model_class_name = self.get_class_name_from_code(model_class_code, "model")
+        save_to_file(f"{model_class_name}.java", model_class_code)
+        self._files_to_remove.add(f"{model_class_name}.java")
+
+        # 2. Compile saved model class
+
+        compile_result = run_process_to_stdout(
+            f"javac {model_class_name}.java"
+        )
+        if compile_result.returncode != 0:
+            raise TestingError(compile_result.stdout + "\n** Compilation of model code failed. Testing aborted **")
+        self._files_to_remove.add(f"{model_class_name}.class")
+
+        # 3. Take given student JUnit code from STUDENT_ANSWER and save to file
+
+        junit_class_name = self.get_class_name_from_code(student_junit_code, "JUnit")
+        save_to_file(f"{junit_class_name}.java", student_junit_code)
+        self._files_to_remove.add(f"{junit_class_name}.java")
+
+        # 4. Compile student JUnit code
+
+        compile_result = run_process_to_stdout(
+            f"javac -cp .:{self.junit_console_file} {junit_class_name}.java"
+        )
+        if compile_result.returncode != 0:
+            raise TestingError(f"{compile_result.stdout}\n** Compilation of JUnit code failed. Testing aborted **")
+        self._files_to_remove.add(f"{junit_class_name}.class")
+
+        # If precheck, return OK now, as we only want to make sure their code compiles.
+
+        if is_precheck:
+            return "** Code compiled successfully **"
+
+        # 5. Run java -jar ConsoleRunner and save output
+
+        execution_result = run_process_to_stdout(
+            f"java -jar {self.junit_console_file} --details none --classpath . --select-class {junit_class_name}"
+        )
+
+        result_str = execution_result.stdout.replace(self.junk_junit_output_text, "").strip()
+
+        # 6. Assert that the result was as expected
+
+        if should_pass and execution_result.returncode == 1:
+            raise TestingError(f"{result_str}\n\n** Expected the tests to pass, but at least one failed! **")
+        if should_pass is False and execution_result.returncode == 0:
+            raise TestingError(f"{result_str}\n\n** Expected at least one test to fail, but they all passed! **")
+        if result_str == "" and execution_result.returncode == 0:
+            result_str = "All tests passed!"
+
+        return result_str
+
+    def get_class_name_from_code(self, code: str, code_type: str) -> str:
+        """
+        :param code: The source code to extract the class name from
+        :param code_type: The type of code to be used for error messages
+        :return: The class name found
+        :raise TestingError: if there was not exactly one valid class
+        """
+        class_name_search = self.class_detector_regex.search(code)
+        if class_name_search is None:
+            raise TestingError(f"** Could not find public class in the {code_type} code. Testing aborted **")
+        if len(class_name_search.groups()) > 1:
+            raise TestingError(f"** Multiple public classes found in the {code_type} code. Testing aborted **")
+        return class_name_search.group(1)
+
+    @staticmethod
+    def parse_args(model_class_code_str: str,
+                   student_junit_code_str: str,
+                   expected_result_str: str,
+                   is_precheck_str: str
+                   ) -> Tuple[str, str, bool, bool]:
+        """
+        Take the arguments from the template input and parse them. Do some validation to check values are valid
+
+        :return: 4 tuple with the model code, student code, if the tests should pass or fail,
+         and if the test is a precheck
+        :raise TestingError: if the inputs do not match the required input
+        """
+        if is_precheck_str not in ("0", "1"):
+            raise TestingError("IS_PRECHECK must be 0 or 1")
+        is_precheck = True if (is_precheck_str == "1") else False
+        if expected_result_str not in ("PASS", "FAIL"):
+            raise TestingError("Expected output must be either PASS or FAIL")
+        should_pass = True if expected_result_str == "PASS" else False
+        return model_class_code_str, student_junit_code_str, should_pass, is_precheck
+
+
+def run_tester():
     """
-    Main program - compile all supplied Java files and run all JUnit tests
-    :return: Should return a Tuple[float, string] with the fractional score and then the output text
-    :raises: TestingError if there were any issues with the student code that should result in a zero mark
+    Tries to run main_logic but catches any TestingErrors gracefully.
+    Prints the JSON data as expected by the CodeRunner test executor.
     """
+    is_precheck_str = """{{ IS_PRECHECK }}"""
+    expected_result_str = """{{ TEST.expected }}"""
+    model_class_code_str = """{{ TEST.testcode | e('py') }}"""
+    student_junit_code_str = """{{ STUDENT_ANSWER | e('py') }}"""
 
-    if EXPECTED_RESULT not in ("PASS", "FAIL"):
-        raise TestingError("Expected output must be either PASS or FAIL")
-
-    # 1. Take given model class from TEST.testcode and save to file
-
-    model_class_name = get_class_name_from_code(MODEL_CLASS_CODE, "model")
-    save_to_file(f"{model_class_name}.java", MODEL_CLASS_CODE)
-
-    # 2. Compile saved model class
-
-    compile_result = run_process_to_stdout(
-        f"javac {model_class_name}.java"
-    )
-    if compile_result.returncode != 0:
-        raise TestingError(compile_result.stdout + "\n** Compilation of model code failed. Testing aborted **")
-
-    # 3. Take given student JUnit code from STUDENT_ANSWER and save to file
-
-    junit_class_name = get_class_name_from_code(STUDENT_JUNIT_CODE, "JUnit")
-    save_to_file(f"{junit_class_name}.java", STUDENT_JUNIT_CODE)
-
-    # 4. Compile student JUnit code
-
-    compile_result = run_process_to_stdout(
-        f"javac -cp .:{JUNIT_CONSOLE_FILE} {junit_class_name}.java"
-    )
-    if compile_result.returncode != 0:
-        raise TestingError(f"{compile_result.stdout}\n** Compilation of JUnit code failed. Testing aborted **")
-
-    # If precheck, return OK now, as we only want to make sure their code compiles.
-
-    if IS_PRECHECK:
-        return 1, "** Code compiled successfully **"
-
-    # 5. Run java -jar ConsoleRunner and save output
-
-    execution_result = run_process_to_stdout(
-        f"java -jar {JUNIT_CONSOLE_FILE} --details none --classpath . --select-class {junit_class_name}"
-    )
-
-    result_str = execution_result.stdout.replace(JUNK_JUNIT_OUTPUT_TEXT, "").strip()
-
-    # 6. Assert that the result was as expected
-
-    if EXPECTED_RESULT == "PASS" and execution_result.returncode == 1:
-        raise TestingError(f"{result_str}\n\n** Expected the tests to pass, but at least one failed! **")
-    if EXPECTED_RESULT == "FAIL" and execution_result.returncode == 0:
-        raise TestingError(f"{result_str}\n\n** Expected at least one test to fail, but they all passed! **")
-    if result_str == "" and execution_result.returncode == 0:
-        result_str = "All tests passed!"
-
-    return 1, result_str
+    junit_tester = JUnitTester(JUNIT_CONSOLE_FILE, JUNK_JUNIT_OUTPUT_TEXT)
+    try:
+        model_class_code, student_junit_code, should_pass, is_precheck = junit_tester.parse_args(
+            model_class_code_str, student_junit_code_str, expected_result_str, is_precheck_str)
+        output_text = junit_tester.test_junit_program(model_class_code, student_junit_code, should_pass, is_precheck)
+        fractional_score = 1
+    except TestingError as e:
+        output_text = e.message
+        fractional_score = 0
+    finally:
+        junit_tester.cleanup()
+    result = {'fraction': fractional_score, 'got': output_text}
+    print(json.dumps(result))
 
 
-main_wrapper()
+if __name__ == "__main__":
+    run_tester()
 ]]></template>
     <iscombinatortemplate>0</iscombinatortemplate>
     <allowmultiplestdins>0</allowmultiplestdins>
